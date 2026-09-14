@@ -69,6 +69,14 @@ lists defences is read as a claim of completeness.
   signature, so a first install on a new commit trusts TLS to the vendor endpoint.
   Digests are recorded on first use and enforced afterwards, which catches a later
   substitution but not the first one.
+- **The build itself.** Third-party code does run there, and saying otherwise would
+  be the kind of claim this file exists to avoid. The release job fetches
+  `@vscode/vsce` at a pinned version to produce the archive, and TypeScript, esbuild
+  and the actions in the workflow all execute. What the checks above buy is narrower
+  and worth stating exactly: no dependency's own install script runs, every action is
+  pinned by commit digest, the packaging tool is not a standing dependency of the
+  project, and the bundle that results is reproducible from source so a reader can
+  rebuild it and compare rather than trust the machine that built it.
 
 ## Verifying a release
 

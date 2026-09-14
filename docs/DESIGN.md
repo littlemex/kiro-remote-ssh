@@ -138,7 +138,7 @@ Kiro.
 |---|---|
 | `Resolver` | The proposed-API surface. Registers the `ssh-remote` resolver and translates. Deliberately thin. |
 | `AuthoritySession` | One authority's state machine and lifecycle: resolve, re-resolve, dispose, cancellation. |
-| `OpenSSHTransport` | The `ssh` executable: capability detection, the master connection, `exec`, `-W`, `-L`, the askpass bridge, stderr classification. |
+| `OpenSSHTransport` | The `ssh` executable: capability detection, the master connection, `exec`, `-W`, the listeners this process owns, the askpass bridge, stderr classification. |
 | `ArtifactProvisioner` | Acquiring the REH tarball, digest handling, archive inspection, atomic install. |
 | `RehManager` | Starting the server, liveness probing, the connection token, install locking, reuse and GC. |
 | `ProductMetadata` | Reading commit, URL template and server names out of the local `product.json`. |
@@ -164,11 +164,11 @@ exists for the primary channel at all, which removes local port collisions, the
 window between choosing a free port and binding it, and the question of which
 other local processes could reach that port.
 
-This is a **spike before commitment**, not an assumption. What has to be
-established on the machine is backpressure behaviour, reconnection, and close
-semantics of Kiro's managed connections, plus correct child stdio lifecycle.
-If the spike fails, the fallback is `-L` with an explicit `127.0.0.1` bind,
-`ExitOnForwardFailure=yes`, and a retry on collision.
+This was a **spike before commitment**, and it held: on a real host the channel
+carries a session, reconnects, and closes without a local listener existing for
+it, so the `-L` fallback that was drafted here was never needed and is not in the
+code. What a longer-running window still has to demonstrate is backpressure under
+sustained traffic; see "Verified so far" for what has and has not been measured.
 
 Note that a fully stdio-only design is not available: the REH listens on TCP, so
 even in the managed case the remote side is reached by `-W` to remote loopback.
@@ -191,13 +191,17 @@ signed in on that host. This was found by connecting successfully and then
 watching the remote agent fail with a missing token, which is not a symptom
 anybody would trace back to a tunnel provider by reading code.
 
-Forwards are created with `-O forward` against the connection that already
-exists, rather than by starting another `ssh`. Reusing the established
-connection is what keeps the single-transport guarantee: a second invocation
-could authenticate again and, worse, land on a different machine. Every forward
-binds `127.0.0.1` explicitly and points at the host's own loopback; forwarding to
-any other address on the remote would turn this machine into a route into the
-remote network, which is not what a port forward for an editor is for.
+A forward is a listening socket this process owns. `net.createServer` binds
+`127.0.0.1` on a port the kernel assigns, and each accepted connection is carried
+to the host's own loopback by an `ssh -W` child over the connection that already
+exists, so authentication still happens once and no second invocation can land on
+a different machine. The earlier arrangement here — `-O forward` against the
+master — was replaced for one reason: the listening descriptor belonged to the
+master, so nothing this process could do made it disappear on an abrupt end. The
+three arrangements that were measured and the result of each are recorded on
+`listenForRemotePort` in `src/transport/openssh.ts`. Forwarding to any address on the remote other
+than its own loopback would turn this machine into a route into the remote
+network, which is not what a port forward for an editor is for.
 
 Dynamic (SOCKS) forwarding is not implemented.
 
