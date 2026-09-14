@@ -16,11 +16,15 @@ served. What is missing is the client half: something that resolves the
 ## Why not use an existing extension
 
 The community options were audited first; the audit is in
-[SECURITY_AUDIT.md](SECURITY_AUDIT.md). The finding that drives this design is
-that the most widely used option reimplements the SSH client in JavaScript, and
-that reimplementation performs no server host key verification and vendors an SSH
-library that predates the strict key exchange mitigation for CVE-2023-48795.
-Those are not isolated bugs. They are what owning an SSH implementation costs.
+[SECURITY_AUDIT.md](SECURITY_AUDIT.md), written by this project's author and so
+not a neutral source — it names the artifacts it read and their digests so the
+claims can be checked rather than believed. The finding that drives this design is
+that the most installed option reimplements the SSH client in JavaScript, and that
+reimplementation does not verify the server's host key and vendors an SSH library
+predating the strict key exchange mitigation for CVE-2023-48795. The second
+follows the first rather than compounding it: an attacker who is not resisted by
+the first has no need of the second. Neither is an isolated bug. They are what
+owning an SSH implementation costs.
 
 So the central decision is to not own one.
 
