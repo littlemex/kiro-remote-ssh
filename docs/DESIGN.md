@@ -403,8 +403,32 @@ Posture
 ### Verified so far
 
 On a throwaway Ubuntu 24.04 host, x64, glibc 2.39, with OpenSSH 10.3 locally and
-9.6 on the host: 1, 4, 8, and the parts of 17 and 18 that a running session can
-show. The remote extension host started, both its management and extension host
-connections were established over `ssh -W`, `kiro.kiroAgent` was running on the
-host, and this machine had no listening socket for the channel. Items 2, 3 and the
-rest remain unverified.
+9.6 on the host:
+
+- **1** — a clean host installed and started the server, and the report came back
+  with a listening port and a token.
+- **4** — a second and third connection reused the running server on the same
+  port. The first attempt did not: the install lock was held on a file descriptor
+  the detached server inherited, so the next connection waited on a lock held by
+  the very server it meant to reuse.
+- **8** — a forward was created and the local end answered, which is what makes
+  `asExternalUri` able to return anything at all.
+- **14** — an authentication provider that never answered did not prevent the
+  connection, after it was raced against a timeout. Before that it prevented it
+  completely.
+- **17, 18** in part — during a live session this machine had no listening socket
+  for the channel, the server was bound to the host's loopback only, the token did
+  not appear in any process's arguments on the host when every `/proc/*/cmdline`
+  was scanned, and the token file was `0600`.
+
+The remote extension host started, both its management and extension host
+connections were established over `ssh -W`, and the agent extension was running
+on the host.
+
+**Item 3 is not verified and is not being pursued here.** An agent that
+authenticates needs a sign-in on the host, and signing production credentials
+into a throwaway machine to close a checklist item is the wrong trade. The
+mechanism it depends on — forwarding, so the sign-in callback can reach the
+user's browser — is verified as item 8; whether the agent then works is a
+question about the agent, not about this extension. Everything else in the list
+remains unverified.
