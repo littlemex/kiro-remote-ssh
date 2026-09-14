@@ -1,0 +1,95 @@
+{
+  "name": "kiro-remote-ssh",
+  "displayName": "Remote - SSH for Kiro",
+  "description": "Open a folder on a remote Linux host over SSH, with the editor, terminal and agent running on that host.",
+  "version": "0.1.0",
+  "publisher": "littlemex",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/littlemex/kiro-remote-ssh.git"
+  },
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "enabledApiProposals": [
+    "resolvers"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onResolveRemoteAuthority:ssh-remote"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "kiroRemoteSsh.connect",
+        "title": "Remote SSH: Connect to Host...",
+        "category": "Remote SSH"
+      },
+      {
+        "command": "kiroRemoteSsh.showLog",
+        "title": "Remote SSH: Show Log",
+        "category": "Remote SSH"
+      }
+    ],
+    "configuration": {
+      "title": "Remote - SSH",
+      "properties": {
+        "kiroRemoteSsh.sshPath": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "Absolute path to the ssh executable. Leave empty to resolve it from PATH. Only OpenSSH is supported."
+        },
+        "kiroRemoteSsh.connectTimeout": {
+          "type": "number",
+          "default": 60,
+          "scope": "application",
+          "description": "Seconds to wait for a connection to be established."
+        },
+        "kiroRemoteSsh.serverDownloadUrlTemplate": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "Overrides the server download URL template. Read from application scope only, never from a workspace, so that a repository cannot redirect where the server comes from. Leave empty to use the value the installed application publishes."
+        },
+        "kiroRemoteSsh.serverDigests": {
+          "type": "object",
+          "default": {},
+          "scope": "application",
+          "description": "SHA-256 digests pinned per server commit, as commit to digest. A pin here overrides the digest recorded on first use. Read from application scope only."
+        },
+        "kiroRemoteSsh.logLevel": {
+          "type": "string",
+          "enum": [
+            "info",
+            "debug",
+            "trace"
+          ],
+          "default": "info",
+          "scope": "application",
+          "description": "Log verbosity. No level logs connection tokens or composed command lines."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "npm run check && node build.mjs",
+    "check": "tsc --noEmit",
+    "package": "npm run build && vsce package",
+    "watch": "node build.mjs --watch"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/vscode": "1.96.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "0.25.12",
+    "typescript": "5.9.3"
+  }
+}

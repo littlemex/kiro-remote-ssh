@@ -173,9 +173,61 @@ If the spike fails, the fallback is `-L` with an explicit `127.0.0.1` bind,
 Note that a fully stdio-only design is not available: the REH listens on TCP, so
 even in the managed case the remote side is reached by `-W` to remote loopback.
 
-User-requested port forwards need a local listener by definition and use `-L`
-with an explicit `127.0.0.1` bind. Dynamic (SOCKS) forwarding is not
-implemented.
+## Forwarding is not optional
+
+Port forwarding looks like a convenience next to the channel above, and it is
+not. The host installs a tunnel provider only if the resolver supplies a
+`tunnelFactory`; for a managed authority its own fallback is a method with an
+empty body that returns nothing. A resolver that omits it therefore leaves the
+remote window with no forwarding at all, and `asExternalUri` — the API a remote
+extension uses to hand the user a URL their own browser can open — has nothing to
+offer.
+
+The consequence is not a missing feature but a broken one somewhere else
+entirely: a remote extension that has to authenticate serves its sign-in
+callback on the remote loopback and asks `asExternalUri` to make it reachable.
+Without forwarding it never becomes reachable, so that extension can never be
+signed in on that host. This was found by connecting successfully and then
+watching the remote agent fail with a missing token, which is not a symptom
+anybody would trace back to a tunnel provider by reading code.
+
+Forwards are created with `-O forward` against the connection that already
+exists, rather than by starting another `ssh`. Reusing the established
+connection is what keeps the single-transport guarantee: a second invocation
+could authenticate again and, worse, land on a different machine. Every forward
+binds `127.0.0.1` explicitly and points at the host's own loopback; forwarding to
+any other address on the remote would turn this machine into a route into the
+remote network, which is not what a port forward for an editor is for.
+
+Dynamic (SOCKS) forwarding is not implemented.
+
+## Authentication on the remote
+
+Two facts constrain this, and both were learned by running it.
+
+The first is that resolving must not wait on anything optional. Asking the local
+authentication provider for a session with `silent: true` is documented not to
+prompt, but this host registers a sign-in controller alongside its provider, and
+in practice the call opened the sign-in page and never returned. Because that
+happened inside `resolve()`, the editor sat on "invoking final resolve()"
+indefinitely: an improvement meant to *avoid* a second sign-in instead caused one
+and prevented the connection. The lookup is now raced against a short timeout and
+abandoned, and the connection proceeds without passing a session on.
+
+The second is that moving the agent to the remote moves its token refresh with
+it. The agent keeps a short-lived token in a file under the home directory and
+refreshes it in the background, so with the agent running remotely nobody
+refreshes the copy on this machine any more. A local token that was valid when a
+window opened can therefore be expired an hour later, and "there is a session
+here to pass on" stops being true without anything visibly changing.
+
+So the supported path is that the user signs in once inside the remote window.
+That works because forwarding exists, the token then persists in the remote home
+directory, and the remote's own background refresh keeps it alive. Copying the
+local token file to the host would also work and is not done: multiplying a
+bearer credential across machines is the class of thing this design exists to
+avoid, and it would be a strange thing to do in the same document that refuses to
+rewrite a remote `product.json`.
 
 ## Acquiring the server
 
@@ -309,37 +361,50 @@ Function
 5. A host reachable only through a `ProxyCommand` connects.
 6. Extensions install into the remote extension host from Open VSX.
 7. A host with no egress connects via local fetch and upload.
+8. A remote extension that needs a browser can be signed in, because
+   `asExternalUri` returns a URL that resolves to a forwarded local port.
 
 Failure and environment
 
-8. A password-only host connects, through the askpass bridge.
-9. An unknown host shows the fingerprint and waits; a host whose key conflicts
-   with `known_hosts` is refused and not silently accepted.
-10. A host whose login shell is `fish` and whose `.bashrc` and MOTD write to
+9. A password-only host connects, through the askpass bridge.
+10. An unknown host shows the fingerprint and waits; a host whose key conflicts
+    with `known_hosts` is refused and not silently accepted.
+11. A host whose login shell is `fish` and whose `.bashrc` and MOTD write to
     stdout still bootstraps, because the report is delimited.
-11. A musl host, a macOS host, and a host without `tar` each fail with the one
+12. A musl host, a macOS host, and a host without `tar` each fail with the one
     sentence that names the reason.
-12. Network is cut mid-session and restored; the session re-resolves and
-    unsaved buffers survive.
+13. Network is cut mid-session and restored; the session re-resolves and unsaved
+    buffers survive.
+14. A local authentication provider that never answers does not prevent the
+    connection.
 
 Concurrency
 
-13. Two windows connecting to the same host for the first time do not race; one
+15. Two windows connecting to the same host for the first time do not race; one
     installs and the other waits.
-14. After Kiro updates, a new window installs the new commit and the window
-    still on the old commit keeps working.
+16. After Kiro updates, a new window installs the new commit and the window still
+    on the old commit keeps working.
 
 Posture
 
-15. Nothing this extension started listens on a non-loopback address during a
-    session, including with `LocalForward 0.0.0.0:…` present in the user's config
-    for that host.
-16. `ps` on the remote does not show the token; the token file is `0600`.
-17. The log contains neither the token nor any composed command line.
-18. An archive whose bytes differ from the recorded digest for that
+17. Nothing this extension started listens on a non-loopback address during a
+    session, including with `LocalForward 0.0.0.0:...` present in the user's
+    config for that host, and including while a forward is active.
+18. `ps` on the remote does not show the token; the token file is `0600`.
+19. The log contains neither the token nor any composed command line.
+20. An archive whose bytes differ from the recorded digest for that
     `(commit, arch)` is rejected **before extraction**. An archive for a
     different commit is rejected before execution. An archive that keeps the
     expected commit and has no recorded digest is **not** detected — this is
     asserted as a known limit, not as a pass.
-19. An archive containing an entry with `..`, an absolute path, or a symlink
+21. An archive containing an entry with `..`, an absolute path, or a symlink
     pointing outside the staging directory is rejected.
+
+### Verified so far
+
+On a throwaway Ubuntu 24.04 host, x64, glibc 2.39, with OpenSSH 10.3 locally and
+9.6 on the host: 1, 4, 8, and the parts of 17 and 18 that a running session can
+show. The remote extension host started, both its management and extension host
+connections were established over `ssh -W`, `kiro.kiroAgent` was running on the
+host, and this machine had no listening socket for the channel. Items 2, 3 and the
+rest remain unverified.
