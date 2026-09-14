@@ -38,15 +38,12 @@ export interface ManagedResolvedAuthority {
     makeConnection: () => Promise<ManagedMessagePassing>;
     connectionToken?: string;
     /**
-     * The local sign-in to hand to the remote extension host as it starts
-     * extensions there.
+     * A local sign-in for the remote extension host to start extensions with.
      *
-     * Without this, an extension that authenticates — the agent, for one — starts
-     * on the remote with no session and asks the user to sign in a second time,
-     * because its token cache is a file in the *remote* home directory and the
-     * one they already signed into is here. The host reads `id` and `providerId`
-     * off this and passes them through as the remote extension host's
-     * `authenticationSession`.
+     * Declared because the host reads it, and left unset: see the note in
+     * AuthoritySession.resolve. Resolving precedes extension activation, so there
+     * is no authentication provider to ask at the only moment this could be
+     * filled.
      */
     authenticationSessionForInitializingExtensions?: { id: string; providerId: string };
 }

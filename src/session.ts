@@ -7,37 +7,6 @@ import { RehManager } from './reh/manager';
 import { OpenSSHTransport } from './transport/openssh';
 
 /**
- * Authentication providers whose session is worth forwarding, most specific
- * first. `kiro` is the provider the agent registers and the one product.json
- * lists under trustedExtensionAuthAccess; the others are here because a build
- * that renames it should degrade to "no session to pass on" rather than to a
- * second sign-in prompt on every remote connection.
- */
-const AUTH_PROVIDER_IDS = ['kiro', 'kiro-login', 'aws-builder-id'];
-
-/** How long the optional sign-in lookup may take before it is abandoned. */
-const SIGN_IN_LOOKUP_TIMEOUT_MS = 2_000;
-
-const TIMED_OUT = Symbol('timed out');
-
-function withTimeout<T>(promise: Thenable<T>, ms: number): Promise<T | typeof TIMED_OUT> {
-    return new Promise((resolve) => {
-        const timer = setTimeout(() => resolve(TIMED_OUT), ms);
-        void Promise.resolve(promise).then(
-            (value) => {
-                clearTimeout(timer);
-                resolve(value);
-            },
-            () => {
-                clearTimeout(timer);
-                resolve(TIMED_OUT);
-            },
-        );
-    });
-}
-
-
-/**
  * One authority's lifetime.
  *
  * Re-resolution after a network drop is a transition of this object, not a fresh
@@ -73,59 +42,28 @@ export class AuthoritySession {
         const endpoint = await this.reh!.ensureRunning();
         this.endpoint = { port: endpoint.port, connectionToken: endpoint.connectionToken };
 
-        const authenticationSession = await this.localSignIn();
-
+        // No authentication session is passed on, and it is worth saying why
+        // rather than leaving the field looking forgotten.
+        //
+        // The host can carry a local sign-in to the remote extension host through
+        // `authenticationSessionForInitializingExtensions`, and the obvious way to
+        // fill it is to ask the local provider for a session here. That cannot
+        // work: resolving an authority happens *before* extensions activate, so at
+        // this moment no authentication provider is registered — not remotely, and
+        // not locally either. Asking simply waits for a provider that appears only
+        // after this function returns, which is a deadlock rather than a slow path,
+        // and it was one: the editor sat on "invoking final resolve()" until the
+        // wait was abandoned. Measured with a valid local token in place, so it is
+        // ordering and not expiry.
+        //
+        // What this extension owes the problem instead is forwarding, so that a
+        // sign-in started on the remote can reach the user's browser. That is
+        // implemented, and the token then lives on the host and is refreshed there.
         return {
             connectionToken: endpoint.connectionToken,
             makeConnection: () => this.makeConnection(),
-            ...(authenticationSession ? { authenticationSessionForInitializingExtensions: authenticationSession } : {}),
         };
     }
-
-    /**
-     * The session already signed into here, so the remote does not ask again.
-     *
-     * The agent keeps its token in a file under the home directory, so on the
-     * remote it finds an empty cache and starts its own sign-in: the user is
-     * asked to authenticate a second time for a machine they only wanted to edit
-     * on. Passing the local session through is the mechanism the host provides
-     * for exactly this.
-     *
-     * The timeout is not defensive dressing. `getSession` with `silent: true` is
-     * documented not to prompt, but this host registers a sign-in controller
-     * alongside its authentication provider, and in practice the call opened the
-     * sign-in page and never returned — which happens *inside* `resolve()`, so
-     * the editor sat on "invoking final resolve()" indefinitely and the
-     * connection never happened. An optional improvement must not be able to
-     * prevent the thing it is improving, so this races the lookup and gives up.
-     */
-    private async localSignIn(): Promise<{ id: string; providerId: string } | undefined> {
-        for (const providerId of AUTH_PROVIDER_IDS) {
-            try {
-                const session = await withTimeout(
-                    vscode.authentication.getSession(providerId, [], { silent: true }),
-                    SIGN_IN_LOOKUP_TIMEOUT_MS,
-                );
-                if (session === TIMED_OUT) {
-                    this.log.info(
-                        `looking up the local ${providerId} sign-in did not return in time, so the connection continues without passing it on`,
-                    );
-                    return undefined;
-                }
-                if (session) {
-                    this.log.info(`passing the local ${providerId} sign-in to the remote extension host`);
-                    return { id: session.id, providerId };
-                }
-            } catch (err) {
-                // A provider that is not registered in this build is not a
-                // problem; it just means there is nothing to pass on.
-                this.log.debug(`no ${providerId} session available to pass on`);
-            }
-        }
-        this.log.debug('no local sign-in was available to pass to the remote extension host');
-        return undefined;
-    }
-
 
     /**
      * A forward from this machine to a port on the host.

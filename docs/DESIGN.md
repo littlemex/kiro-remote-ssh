@@ -203,137 +203,36 @@ Dynamic (SOCKS) forwarding is not implemented.
 
 ## Authentication on the remote
 
-Two facts constrain this, and both were learned by running it.
+The host can carry a local sign-in into the remote extension host through
+`authenticationSessionForInitializingExtensions`, and the obvious way to fill it
+is for the resolver to ask the local provider for a session. That cannot work,
+and the reason is ordering rather than anything about tokens: **resolving an
+authority happens before extensions activate**, so at the only moment the field
+could be set, no authentication provider is registered — not on the remote, and
+not locally either. Asking waits for a provider that appears only after `resolve`
+returns. The first attempt did exactly that and the editor sat on "invoking final
+resolve()" until the wait was abandoned; it was measured again with a freshly
+refreshed local token in place and behaved identically, which is what rules out
+expiry as the explanation.
 
-The first is that resolving must not wait on anything optional. Asking the local
-authentication provider for a session with `silent: true` is documented not to
-prompt, but this host registers a sign-in controller alongside its provider, and
-in practice the call opened the sign-in page and never returned. Because that
-happened inside `resolve()`, the editor sat on "invoking final resolve()"
-indefinitely: an improvement meant to *avoid* a second sign-in instead caused one
-and prevented the connection. The lookup is now raced against a short timeout and
-abandoned, and the connection proceeds without passing a session on.
+So the field is declared and left unset, and what this extension owes the problem
+instead is forwarding. An extension on the remote that needs authentication
+serves a callback on the remote loopback and asks `asExternalUri` for a URL the
+user's own browser can reach. With forwarding in place that round trip completes:
+on a host that had no credential cache at all, a sign-in started in the remote
+window created `~/.aws/sso/cache/kiro-auth-token.json` **on the host**, written
+there by the remote extension rather than copied from this machine. The token
+then lives where the extension that uses it lives, and is refreshed there.
 
-The second is that moving the agent to the remote moves its token refresh with
-it. The agent keeps a short-lived token in a file under the home directory and
-refreshes it in the background, so with the agent running remotely nobody
-refreshes the copy on this machine any more. A local token that was valid when a
-window opened can therefore be expired an hour later, and "there is a session
-here to pass on" stops being true without anything visibly changing.
+One consequence of remote extensions is worth recording because it looks like a
+bug later: an extension that refreshes a credential in the background refreshes
+the copy on the side it runs on. With the agent running remotely, the copy on
+this machine is no longer being kept alive by anything.
 
-So the supported path is that the user signs in once inside the remote window.
-That works because forwarding exists, the token then persists in the remote home
-directory, and the remote's own background refresh keeps it alive. Copying the
-local token file to the host would also work and is not done: multiplying a
-bearer credential across machines is the class of thing this design exists to
-avoid, and it would be a strange thing to do in the same document that refuses to
-rewrite a remote `product.json`.
-
-## Acquiring the server
-
-Two acquisition paths, because many hosts cannot reach the vendor endpoint:
-
-1. **Remote fetch.** The host downloads the tarball itself. Default when the
-   host has egress.
-2. **Local fetch and upload.** The client downloads and streams the archive to
-   the host over the transport. Required for hosts without egress, and it has a
-   second benefit: the client can compute the digest itself.
-
-The bootstrap script is delivered on stdin to `ssh … sh`, never as a quoted
-argument, and its report is delimited by a per-invocation random marker so that
-a noisy `.bashrc`, an MOTD, or a non-POSIX login shell cannot be mistaken for
-the report. The script assumes nothing about `PATH` or locale, sets its own
-`umask`, and uses absolute paths.
-
-Prerequisites are checked first and each failure is one sentence: a Linux host
-(no macOS REH is published), glibc (the REH is not a musl build, so Alpine is
-unsupported), `tar`, and `curl` or `wget` for path 1.
-
-## Integrity, stated honestly
-
-This is where the first draft of this design was wrong, so it is spelled out.
-
-**Asserting that the extracted `product.json` reports the expected commit is not
-an integrity check.** An attacker who can substitute the archive can also write
-the expected commit into it. That assertion detects URL construction mistakes,
-vendor mis-publication, and an archive for the wrong commit landing in the wrong
-directory. It does not detect a malicious build.
-
-What is actually done:
-
-- **Digest is verified before extraction**, never after, whenever a digest is
-  known. Extraction is the dangerous step and must not be reached by an archive
-  that is already known to be wrong.
-- **Trust on first use, recorded automatically.** The first time a given
-  `(commit, arch)` archive is obtained, its SHA-256 is recorded in
-  application-scoped extension state. Every later acquisition of that same
-  `(commit, arch)` — including on a different host — must match, or the
-  connection is refused. This catches a targeted substitution aimed at one host,
-  which a manual-only pin never would because nobody sets one.
-- **A manual pin overrides the recorded value**, for users who obtain a digest
-  out of band.
-- **Pins and the download URL template are read from application scope only.**
-  Never from workspace settings and never from the remote's settings. A
-  repository must not be able to relax or redirect this.
-- **Extraction is inspected and staged.** Entries with absolute paths, `..`
-  components, symlinks or hardlinks pointing outside the staging directory, or
-  device nodes are rejected. Extraction goes to an empty staging directory and
-  the result is moved into `bin/<commit>/` by rename, so a partial install never
-  becomes a live one.
-- The commit assertion is still performed, before the server is executed,
-  because it catches the honest mistakes above cheaply.
-
-The residual limit: Kiro publishes no digest or signature for the REH, so the
-very first acquisition of a new commit trusts TLS to the vendor endpoint. Asking
-the vendor to publish digests is the only general fix and is tracked as an
-upstream request.
-
-## Idempotency
-
-"Idempotent" is not a property until the key and the liveness test are defined.
-
-- **The install key is `(commit, arch)`.** Installs live in
-  `~/.kiro-server/bin/<commit>/`, matching the layout VS Code servers use, so
-  several commits coexist. This is required: after Kiro updates, existing
-  windows keep using the old server while new ones use the new one.
-- **The remote install is locked.** The whole bootstrap runs under `flock` on a
-  per-commit lock file, falling back to a `mkdir` lock, so two windows or two
-  client machines connecting for the first time cannot interleave
-  check/download/extract/start. Locally, resolution is serialised per authority.
-- **Liveness is not a PID check.** A server is reused only when the recorded PID
-  exists, *is* a `kiro-server` for that commit, *is* listening on the recorded
-  port, and its token file is readable. If any of those fails the state is
-  stale: it is cleaned up and the server is started fresh. A bare PID check
-  misfires on PID reuse.
-- **The token is reused, not regenerated.** The REH's reconnection protocol
-  requires the same token, so a reused server means reading back the stored
-  token. Generating a new one on every resolve breaks reuse.
-- **The server is detached** with `setsid` so that a host configured with
-  systemd `KillUserProcesses=yes` does not kill it when the bootstrap session
-  ends. Where it is killed anyway, that is detected and reported as itself.
-- **Old commits are collected.** Installs other than the newest two that have no
-  running server are removed.
-
-## Security posture
-
-Constraints on the implementation, not aspirations.
-
-- The extension creates no listener on a non-loopback address. Every `-L` it
-  issues carries an explicit `127.0.0.1`, and its own connections pass
-  `ClearAllForwardings=yes` so user forwarding directives cannot attach to them.
-  This is a statement about this extension's listeners, not about every listener
-  the user's own config may create.
-- No `-A`. Agent forwarding happens only if the user's own SSH config asks for
-  it, where they already express such decisions.
-- The connection token is 32 bytes from a CSPRNG, written to a file created
-  `0600`, and passed to the REH by path, so it never appears in the host's
-  process list.
-- The REH binds `127.0.0.1` on the remote and is reached only through the
-  transport.
-- Host keys are never auto-accepted, and a `known_hosts` conflict is a refusal.
-- Logs record the host alias and the kind of operation, never the composed
-  command line, because a `ProxyCommand` can contain credentials — and never the
-  token.
+Copying the local token file to the host would also make the agent work and is
+not done. Multiplying a bearer credential across machines is the class of thing
+this design exists to avoid, and it would sit oddly in the same document that
+refuses to rewrite a remote `product.json`.
 
 ## Not built
 
@@ -425,10 +324,10 @@ The remote extension host started, both its management and extension host
 connections were established over `ssh -W`, and the agent extension was running
 on the host.
 
-**Item 3 is not verified and is not being pursued here.** An agent that
-authenticates needs a sign-in on the host, and signing production credentials
-into a throwaway machine to close a checklist item is the wrong trade. The
-mechanism it depends on — forwarding, so the sign-in callback can reach the
-user's browser — is verified as item 8; whether the agent then works is a
-question about the agent, not about this extension. Everything else in the list
-remains unverified.
+**Item 3 is not verified, and the reason is not this extension.** The mechanism it
+depends on is verified: a sign-in started in the remote window completed through
+the forward and wrote a credential cache on the host. What the agent then reported
+is that the account has no Kiro profile assigned in its directory, which is an
+entitlement held elsewhere. That is a useful result rather than a gap in the
+verification — it says the path is open and the remaining obstacle is not
+technical. Everything else in the list remains unverified.
