@@ -140,13 +140,22 @@ try {
             .join('; '),
     );
 } catch (err) {
-    notes.push(`note  could not list the archive contents (${err.message.split('\n')[0]})`);
+    // A check that cannot run has not passed. Reporting this as a note let the
+    // suite exit zero whenever the packaging tool was unavailable, which is the
+    // one moment the file list is least likely to be what anyone expects.
+    failures.push(`FAIL  could not list the archive contents, so its file list is unverified (${err.message.split('\n')[0]})`);
 }
 
-// 8. The remote programs. These run on someone else's machine, so they are read
-// as part of review and are pinned by digest here: a change to either of them is a
+// 8. The remote programs. These run on someone else's machine, so they are read as
+// part of review and are pinned by digest here: a change to either of them is a
 // change to what executes on a host, and should be visible as such.
-for (const remote of ['src/reh/bootstrap.sh', 'src/reh/lease.py']) {
+//
+// Absence is a failure rather than a skip. Guarding this with a existence test let
+// the list keep naming a file that had been deleted, so the loop reported a digest
+// for one program and said nothing at all about the other.
+const remotePrograms = ['src/reh/bootstrap.sh'];
+for (const remote of remotePrograms) {
+    check(`${remote} is present to be pinned`, existsSync(remote));
     if (existsSync(remote)) {
         notes.push(`note  ${remote} sha256 ${createHash('sha256').update(readFileSync(remote)).digest('hex')}`);
     }
