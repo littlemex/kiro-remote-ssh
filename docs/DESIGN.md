@@ -236,17 +236,26 @@ accepts are the ones whose lifetime cannot be guaranteed.
 
 Three routes remain, none of them free, and none taken yet:
 
-- **A real file, removed on the way out.** Accepted by the reader; the lifetime
-  guarantee is lost, so it would have to be described as "a credential copied to the
-  host for up to its expiry" rather than as session-scoped. The client registration
-  and refresh token would stay on this machine regardless, because a client secret is
-  valid for months.
+- **A real file, removed on the way out.** Built and withdrawn. The reader accepts
+  it, and the agent did reach its models with it — but ownership breaks in a way that
+  is worse than the lifetime problem it was meant to avoid. Once the client has placed
+  a file it considers its own, it overwrites on renewal and removes on exit. A user who
+  then signs in *on the host* has their fresh, refreshable credential replaced by the
+  client's short-lived one and deleted at the end of the session, so the sign-in prompt
+  returns and returns. Measured, and it is the same defect a review had already named
+  for the previous implementation, reintroduced while porting it. Doing this correctly
+  means comparing content before every write and every removal, which is a narrow path
+  to walk for the sake of skipping one sign-in.
 - **`extensionHostEnv` pointing the remote extension host's `HOME` at tmpfs.** A real
   file that does not survive a reboot, which is a genuine improvement — but it moves
   `HOME` for every extension on that host, and the consequences of that have not been
   explored.
 - **Nothing, which is what ships.** One sign-in per host, in the remote window, using
-  the forwarding this extension does provide.
+  the forwarding this extension does provide. After it, the token lives where the
+  extension that uses it lives and that extension refreshes it, so no credential is
+  copied, no lifetime has to be guaranteed, and nothing can overwrite anything. Having
+  built both alternatives, one sign-in per host is not a cost worth this much
+  machinery.
 
 Also worth recording, because it looks like a bug later: an extension that refreshes a
 credential in the background refreshes the copy on the side it runs on. With the agent

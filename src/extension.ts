@@ -23,8 +23,15 @@ export function activate(context: vscode.ExtensionContext): void {
     // even when this build turns out not to support remote development. An empty
     // panel that explains itself beats no panel at all.
     const hosts = new HostTreeProvider();
+    try {
+        context.subscriptions.push(vscode.window.registerTreeDataProvider('kiroRemoteSsh.hosts', hosts));
+    } catch (err) {
+        // A build that does not accept the view contribution should still be able to
+        // connect. Registering a provider for a view the workbench never created
+        // throws, and taking activation down with it would remove the commands too.
+        log.error('the host list view is unavailable in this build', err);
+    }
     context.subscriptions.push(
-        vscode.window.registerTreeDataProvider('kiroRemoteSsh.hosts', hosts),
         vscode.commands.registerCommand('kiroRemoteSsh.showLog', () => log.show()),
         vscode.commands.registerCommand('kiroRemoteSsh.refreshHosts', () => hosts.refresh()),
         vscode.commands.registerCommand('kiroRemoteSsh.connect', () => connectCommand(log)),

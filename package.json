@@ -24,7 +24,8 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onResolveRemoteAuthority:ssh-remote"
+    "onResolveRemoteAuthority:ssh-remote",
+    "onView:kiroRemoteSsh.hosts"
   ],
   "contributes": {
     "commands": [
@@ -101,10 +102,8 @@
       "remote": [
         {
           "id": "kiroRemoteSsh.hosts",
-          "name": "SSH",
-          "group": "targets@1",
-          "remoteName": "ssh-remote",
-          "icon": "icon.png"
+          "name": "SSH Targets",
+          "group": "targets@1"
         }
       ]
     },
@@ -141,13 +140,23 @@
       "statusBar/remoteIndicator": [
         {
           "command": "kiroRemoteSsh.connect",
-          "when": "!remoteName",
+          "when": "!remoteName && !virtualWorkspace",
           "group": "remote_20_ssh@1"
         },
         {
-          "command": "kiroRemoteSsh.showLog",
-          "when": "remoteName == ssh-remote",
+          "command": "kiroRemoteSsh.openConfig",
+          "when": "!remoteName && !virtualWorkspace",
           "group": "remote_20_ssh@2"
+        },
+        {
+          "command": "kiroRemoteSsh.connect",
+          "when": "remoteName =~ /^ssh-remote$/",
+          "group": "remote_20_ssh@3"
+        },
+        {
+          "command": "kiroRemoteSsh.showLog",
+          "when": "remoteName =~ /^ssh-remote$/",
+          "group": "remote_20_ssh@4"
         }
       ]
     }

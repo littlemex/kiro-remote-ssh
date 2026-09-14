@@ -42,8 +42,7 @@ export class AuthoritySession {
         const endpoint = await this.reh!.ensureRunning();
         this.endpoint = { port: endpoint.port, connectionToken: endpoint.connectionToken };
 
-        // No credential is sent to the host and no authentication session is passed
-        // on, and both deserve an explanation rather than looking forgotten
+        // No authentication session is passed on, and it is worth saying why
         // rather than leaving the field looking forgotten.
         //
         // The host can carry a local sign-in to the remote extension host through
