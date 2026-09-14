@@ -12,7 +12,7 @@ const options = {
     logLevel: 'info',
     // The bootstrap script is delivered to the remote host on stdin, so it has to
     // travel inside the bundle rather than being read from disk at runtime.
-    loader: { '.sh': 'text' },
+    loader: { '.sh': 'text', '.py': 'text' },
 };
 
 if (process.argv.includes('--watch')) {

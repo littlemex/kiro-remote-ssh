@@ -1,0 +1,176 @@
+name: ci
+
+# Actions are pinned to commit digests rather than tags. A tag is a mutable
+# pointer, so trusting one means trusting whoever can move it, and this workflow
+# both builds the artifact people install and signs a statement about it.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+# Read-only by default. The one job that needs more says so, and says why.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 20.19.4
+          cache: npm
+
+      # --ignore-scripts is the point of this step, not an optimisation. Install
+      # hooks run arbitrary code on the machine that produces the release, which
+      # makes them the shortest path from a compromised package to a compromised
+      # artifact. Nothing this project needs is produced by one.
+      - run: npm ci --ignore-scripts
+
+      - run: npm run check
+
+      - run: node build.mjs
+
+      # The assertions this project would otherwise be asking people to take on
+      # trust: no runtime dependencies, no hardcoded endpoints, no telemetry, and
+      # an archive containing exactly the expected files.
+      - run: npm run audit:supply-chain
+
+      # A bill of materials generated here rather than by a service, so that every
+      # reader can produce the same one from the same tree and compare.
+      - run: npm run sbom
+
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: sbom
+          path: sbom.cdx.json
+
+      # Reported rather than gating, because a fresh advisory in a build-time
+      # dependency should be visible without making an unrelated change unmergeable.
+      - run: npm audit --audit-level=high || true
+
+      - name: the bundle is reproducible
+        # esbuild's output is deterministic, so two builds of the same tree agree.
+        # This is asserted rather than assumed, because it is what lets a reader
+        # rebuild from source and compare against what was published.
+        run: |
+          first=$(sha256sum dist/extension.js | cut -d' ' -f1)
+          rm -rf dist
+          node build.mjs
+          second=$(sha256sum dist/extension.js | cut -d' ' -f1)
+          echo "first  $first"
+          echo "second $second"
+          test "$first" = "$second"
+
+  # Optional. Runs only where an AWS account has been wired up, and its absence
+  # never blocks a build: requiring an account to verify an open source project
+  # would put the verification out of reach of most of the people who should be
+  # able to do it. The bill of materials above is produced without it.
+  aws-scan:
+    needs: verify
+    if: vars.AWS_SCAN_ROLE_ARN != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 20.19.4
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.AWS_SCAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_SCAN_REGION || 'us-east-1' }}
+
+      - name: scan the tree with Amazon Inspector
+        run: |
+          # Verified against the digest the tool publishes for itself, because a
+          # scanner fetched over the network is itself a supply-chain step.
+          curl -fsSL -o sbomgen.zip https://amazon-inspector-sbomgen.s3.amazonaws.com/latest/linux/amd64/inspector-sbomgen.zip
+          unzip -q sbomgen.zip -d sbomgen
+          cd sbomgen
+          sha256sum -c <(grep inspector-sbomgen checksums.txt) || {
+            echo "the scanner did not match its published digest; refusing to run it"
+            exit 1
+          }
+          chmod +x inspector-sbomgen
+          ./inspector-sbomgen directory --path "$GITHUB_WORKSPACE" \
+            --scan-sbom --scan-sbom-output-format inspector \
+            --outfile "$GITHUB_WORKSPACE/inspector-findings.json"
+
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: inspector-findings
+          path: inspector-findings.json
+
+  release:
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Needed to sign the provenance statement. This is what turns "this artifact
+      # came from this source" from a claim into something verifiable with
+      # `gh attestation verify`.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 20.19.4
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm run audit:supply-chain
+      - run: npm run sbom
+
+      - name: package
+        run: npx --yes @vscode/vsce@3.9.2 package --out kiro-remote-ssh.vsix
+
+      - name: record digests
+        run: |
+          # The bundle digest is the reproducible one: anyone can rebuild the tree
+          # and compare. The archive digest is not reproducible, because the zip
+          # records timestamps, so it is published for identification rather than
+          # as something to reproduce.
+          {
+            echo "bundle (reproducible from source):"
+            sha256sum dist/extension.js
+            echo
+            echo "archive (identifies this build; not byte-reproducible):"
+            sha256sum kiro-remote-ssh.vsix
+          } | tee digests.txt
+
+      - uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1.4.4
+        with:
+          subject-path: |
+            kiro-remote-ssh.vsix
+            sbom.cdx.json
+
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: kiro-remote-ssh-vsix
+          path: |
+            kiro-remote-ssh.vsix
+            sbom.cdx.json
+            digests.txt

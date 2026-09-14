@@ -2,3 +2,6 @@ node_modules/
 dist/
 out/
 *.vsix
+sbom.cdx.json
+inspector-findings.json
+digests.txt

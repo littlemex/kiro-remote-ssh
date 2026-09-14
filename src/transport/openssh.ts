@@ -15,6 +15,15 @@ export interface SshCapabilities {
     readonly minor: number;
 }
 
+/**
+ * How long the shared connection tolerates silence from this client.
+ *
+ * Comfortably longer than the heartbeat that keeps it alive, so an ordinary pause
+ * does not tear down a working session, and far shorter than the two hours a host
+ * would otherwise take to notice.
+ */
+const MASTER_SILENCE_TIMEOUT_SECONDS = 90;
+
 /** Below this, the askpass bridge has no way to force itself into use. */
 const MINIMUM_OPENSSH = { major: 8, minor: 4 };
 
@@ -34,6 +43,8 @@ export class OpenSSHTransport {
     private master: ChildProcess | undefined;
     private readonly controlPath: string;
     private disposed = false;
+    private readonly listeners = new Set<net.Server>();
+    private masterHeartbeat: NodeJS.Timeout | undefined;
 
     constructor(
         private readonly host: string,
@@ -111,6 +122,16 @@ export class OpenSSHTransport {
         if (this.master) {
             return;
         }
+        // The master is given a command that reads its standard input, rather than
+        // `-N`, so that this process's own death ends it.
+        //
+        // With `-N` the master has nothing to notice: when the extension host is
+        // killed the master is orphaned and keeps the connection open forever. That
+        // was measured — nine of them accumulated, and the host's session count
+        // climbed with them. Holding a pipe means the write end closes when we die,
+        // for any reason, and `ssh` sees end-of-input locally and exits. Locally
+        // matters: waiting for the *host* to notice would mean waiting for TCP
+        // keepalive, which is over two hours.
         const args = [
             '-M',
             '-S', this.controlPath,
@@ -119,12 +140,36 @@ export class OpenSSHTransport {
             '-o', 'ServerAliveInterval=15',
             '-o', 'ServerAliveCountMax=4',
             ...this.ownOptions(),
-            '-N',
             this.host,
+            // Two independent reasons for this connection to end, neither of which
+            // is code of ours running at the right moment.
+            //
+            // The first is end-of-input: the write end of this pipe is held only by
+            // this process, so it closes when this process does, however it goes.
+            // The second is silence: if nothing arrives for a while the remote side
+            // exits on its own, and a remote command exiting was measured to end the
+            // local `ssh` and remove its control socket. That matters because the
+            // host cannot be relied on to notice a vanished client — a host with no
+            // `ClientAliveInterval` falls back to TCP keepalive, which is over two
+            // hours on Linux.
+            //
+            // `read -t` needs a shell that has it; `sh` on Debian derivatives does
+            // not, so bash is named explicitly and the fallback is end-of-input
+            // alone rather than a silent loss of the timer.
+            `if command -v bash >/dev/null 2>&1; then exec bash -c 'while read -r -t ${MASTER_SILENCE_TIMEOUT_SECONDS} _; do :; done'; else exec cat > /dev/null; fi`,
         ];
         this.log.debug(`opening the multiplexed connection to ${this.host}`);
         const child = this.spawnSsh(args);
         this.master = child;
+        // Deliberately not ended: this pipe is the master's lifeline. Closing it,
+        // or dying, is what stops it.
+        child.stdin?.on('error', () => undefined);
+        // Written by this process, so it stops when this process stops. A helper
+        // that outlived us would keep the connection alive after we were gone,
+        // which is the failure this whole arrangement exists to avoid.
+        this.masterHeartbeat = setInterval(() => {
+            child.stdin?.write('\n');
+        }, (MASTER_SILENCE_TIMEOUT_SECONDS / 3) * 1000);
 
         let stderr = '';
         child.stderr?.on('data', (chunk: Buffer) => {
@@ -203,46 +248,127 @@ export class OpenSSHTransport {
     }
 
     /**
-     * Forward a local loopback port to a port on the host's loopback interface.
+     * A local listener that carries connections to a port on the host's loopback.
      *
-     * This is what makes `asExternalUri` work, and without it a remote extension
-     * that authenticates cannot: its sign-in callback listens on the *remote*
-     * loopback and expects the editor to hand the user a URL their own browser
-     * can open. With no forwarding there is no such URL, and the sign-in cannot
-     * be completed on the remote at all.
+     * The listening socket is owned by this process, not by `ssh`, and that is the
+     * whole point. Every arrangement where `ssh` listens was measured and every one
+     * of them leaves the listener behind when this process is killed: with
+     * `-O forward`, with `-S ... -N -L`, and with `-S ... -L` plus a remote command,
+     * the listening descriptor belongs to the multiplexing master, so killing the
+     * child that asked for it changes nothing. Dropping multiplexing does make the
+     * listener die with its own `ssh`, but then every forward authenticates again
+     * and the host accumulates sessions.
      *
-     * `-O forward` attaches the forward to the connection that already exists
-     * rather than starting another `ssh`, so it inherits the authentication
-     * already done and cannot land on a different machine.
+     * Holding the descriptor here settles it by a different route. The kernel closes
+     * it when this process ends, for any reason, so the enforcer is not `ssh`'s
+     * decision to exit, not a version-dependent reading of which channels count as
+     * open, and not code of ours that runs at the end. Each accepted connection is
+     * carried by an `ssh -W` child over the shared connection, so authentication
+     * still happens once.
+     *
+     * Choosing the port here rather than probing for a free one also removes a race
+     * that had a nastier consequence than it looks: a probe followed by a bind in
+     * another process can lose to anything that takes the port in between, and an
+     * orphaned forward from an earlier session holding that number would have had a
+     * new session's URLs pointing into an older host.
      */
-    async forwardToRemotePort(remotePort: number, requestedLocalPort?: number): Promise<{ localPort: number; dispose: () => void }> {
+    async listenForRemotePort(
+        remotePort: number,
+        requestedLocalPort?: number,
+    ): Promise<{ localPort: number; dispose: () => void }> {
         await this.openMasterIfNeeded();
-        const localPort = requestedLocalPort && requestedLocalPort > 0 ? requestedLocalPort : await freeLoopbackPort();
-        const spec = `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`;
-        const { stderr, code } = await this.run(
-            this.capabilities!.executable,
-            ['-S', this.controlPath, '-O', 'forward', '-L', spec, this.host],
-            undefined,
-            30_000,
-        );
-        if (code !== 0) {
-            throw new OpenSSHError(
-                `could not forward local port ${localPort} to port ${remotePort} on ${this.host}${classify(stderr)}`,
-            );
-        }
-        this.log.info(`forwarding 127.0.0.1:${localPort} to loopback port ${remotePort} on ${this.host}`);
+        const children = new Set<ChildProcess>();
+        const server = net.createServer((socket) => {
+            void this.connectToRemotePort(remotePort)
+                .then((child) => {
+                    children.add(child);
+                    socket.pipe(child.stdin!);
+                    child.stdout!.pipe(socket);
+                    const close = () => {
+                        children.delete(child);
+                        child.kill();
+                        socket.destroy();
+                    };
+                    socket.once('error', close);
+                    socket.once('close', close);
+                    child.once('exit', close);
+                })
+                .catch((err) => {
+                    this.log.error(`could not carry a connection to loopback port ${remotePort}`, err);
+                    socket.destroy();
+                });
+        });
+        server.on('error', (err) => this.log.error('the local listener failed', err));
+
+        const localPort = await new Promise<number>((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(requestedLocalPort ?? 0, '127.0.0.1', () => {
+                const address = server.address();
+                if (typeof address === 'object' && address) {
+                    resolve(address.port);
+                } else {
+                    reject(new OpenSSHError('the local listener reported no port'));
+                }
+            });
+        });
+        this.log.info(`listening on 127.0.0.1:${localPort} for loopback port ${remotePort} on ${this.host}`);
+        this.listeners.add(server);
+
         return {
             localPort,
             dispose: () => {
-                void this.run(
-                    this.capabilities!.executable,
-                    ['-S', this.controlPath, '-O', 'cancel', '-L', spec, this.host],
-                    undefined,
-                    15_000,
-                );
-                this.log.debug(`stopped forwarding 127.0.0.1:${localPort}`);
+                this.listeners.delete(server);
+                server.close();
+                for (const child of children) {
+                    child.kill();
+                }
+                children.clear();
+                this.log.debug(`stopped listening on 127.0.0.1:${localPort}`);
             },
         };
+    }
+
+    /**
+     * Run a long-lived command on the host with pipes attached.
+     *
+     * Distinct from `exec` because the caller keeps talking to it: this is how the
+     * credential lease is held open, and its stdin is the channel a credential
+     * travels on so that it never appears in a command line.
+     *
+     * `-T` is deliberate. With a pty, a closing channel arrives as SIGHUP or EIO
+     * rather than as end-of-input, and the remote side would have to guess which.
+     */
+    async spawnCommand(command: string): Promise<ChildProcess> {
+        await this.openMasterIfNeeded();
+        return this.spawnSsh([
+            ...this.multiplexOptions(),
+            ...this.ownOptions(),
+            '-T',
+            this.host,
+            command,
+        ]);
+    }
+
+    /**
+     * A long-lived command on a connection of its own.
+     *
+     * Used where the caller's own death must end the remote program. On the shared
+     * connection it would not: a user's `ControlPersist` can keep that connection
+     * alive after we are gone, and the remote side would keep running. The cost is
+     * one extra authentication, which is the right trade for a channel that carries
+     * a credential.
+     */
+    async spawnUnmultiplexedCommand(command: string): Promise<ChildProcess> {
+        await this.detect();
+        return this.spawnSsh([
+            '-o', 'ControlMaster=no',
+            '-o', 'ControlPath=none',
+            '-o', 'BatchMode=no',
+            ...this.ownOptions(),
+            '-T',
+            this.host,
+            command,
+        ]);
     }
 
     private async openMasterIfNeeded(): Promise<void> {
@@ -296,6 +422,14 @@ export class OpenSSHTransport {
 
     dispose(): void {
         this.disposed = true;
+        if (this.masterHeartbeat) {
+            clearInterval(this.masterHeartbeat);
+            this.masterHeartbeat = undefined;
+        }
+        for (const server of this.listeners) {
+            server.close();
+        }
+        this.listeners.clear();
         if (this.capabilities) {
             // Ask the master to exit rather than killing it, so it tears down its
             // own channels.
@@ -338,22 +472,3 @@ function classify(stderr: string): string {
     return firstLine ? `: ${firstLine}` : '';
 }
 
-/**
- * A free loopback port, chosen by the kernel.
- *
- * The window between closing this probe and `ssh` binding the port is real, so
- * every forward is issued with ExitOnForwardFailure: losing the race has to
- * surface as an error rather than as a forward that silently is not there.
- */
-function freeLoopbackPort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-        const server = net.createServer();
-        server.unref();
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', () => {
-            const address = server.address();
-            const port = typeof address === 'object' && address ? address.port : 0;
-            server.close(() => (port ? resolve(port) : reject(new OpenSSHError('could not find a free local port'))));
-        });
-    });
-}

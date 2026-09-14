@@ -19,7 +19,8 @@
     "ui"
   ],
   "enabledApiProposals": [
-    "resolvers"
+    "resolvers",
+    "contribViewsRemote"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
@@ -29,12 +30,30 @@
     "commands": [
       {
         "command": "kiroRemoteSsh.connect",
-        "title": "Remote SSH: Connect to Host...",
+        "title": "Connect to Host...",
+        "category": "Remote SSH",
+        "icon": "$(plus)"
+      },
+      {
+        "command": "kiroRemoteSsh.connectToHost",
+        "title": "Connect to Host",
         "category": "Remote SSH"
       },
       {
+        "command": "kiroRemoteSsh.refreshHosts",
+        "title": "Refresh",
+        "category": "Remote SSH",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "kiroRemoteSsh.openConfig",
+        "title": "Open SSH Configuration",
+        "category": "Remote SSH",
+        "icon": "$(gear)"
+      },
+      {
         "command": "kiroRemoteSsh.showLog",
-        "title": "Remote SSH: Show Log",
+        "title": "Show Log",
         "category": "Remote SSH"
       }
     ],
@@ -77,19 +96,77 @@
           "description": "Log verbosity. No level logs connection tokens or composed command lines."
         }
       }
+    },
+    "views": {
+      "remote": [
+        {
+          "id": "kiroRemoteSsh.hosts",
+          "name": "SSH",
+          "group": "targets@1",
+          "remoteName": "ssh-remote",
+          "icon": "icon.png"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "kiroRemoteSsh.hosts",
+        "contents": "No hosts found in your SSH configuration.\n\nAdd a `Host` entry to `~/.ssh/config`, then refresh. Any host you can already reach with `ssh` works here, including one behind a `ProxyCommand`.\n\n[Open SSH Configuration](command:kiroRemoteSsh.openConfig)\n[Connect to Host...](command:kiroRemoteSsh.connect)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "kiroRemoteSsh.connect",
+          "when": "view == kiroRemoteSsh.hosts",
+          "group": "navigation@1"
+        },
+        {
+          "command": "kiroRemoteSsh.refreshHosts",
+          "when": "view == kiroRemoteSsh.hosts",
+          "group": "navigation@2"
+        },
+        {
+          "command": "kiroRemoteSsh.openConfig",
+          "when": "view == kiroRemoteSsh.hosts",
+          "group": "navigation@3"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "kiroRemoteSsh.connectToHost",
+          "when": "false"
+        }
+      ],
+      "statusBar/remoteIndicator": [
+        {
+          "command": "kiroRemoteSsh.connect",
+          "when": "!remoteName",
+          "group": "remote_20_ssh@1"
+        },
+        {
+          "command": "kiroRemoteSsh.showLog",
+          "when": "remoteName == ssh-remote",
+          "group": "remote_20_ssh@2"
+        }
+      ]
     }
   },
   "scripts": {
-    "build": "npm run check && node build.mjs",
+    "build": "npm run icon && npm run check && node build.mjs",
     "check": "tsc --noEmit",
-    "package": "npm run build && vsce package",
-    "watch": "node build.mjs --watch"
+    "package": "npm run build && npx --yes @vscode/vsce@3.9.2 package",
+    "watch": "node build.mjs --watch",
+    "audit:supply-chain": "node scripts/audit-supply-chain.mjs",
+    "verify": "npm run build && npm run audit:supply-chain && npm run sbom",
+    "sbom": "node scripts/sbom.mjs",
+    "icon": "node scripts/icon.mjs icon.png"
   },
   "devDependencies": {
     "@types/node": "20.19.43",
     "@types/vscode": "1.96.0",
-    "@vscode/vsce": "^3.9.2",
     "esbuild": "0.25.12",
     "typescript": "5.9.3"
-  }
+  },
+  "icon": "icon.png"
 }

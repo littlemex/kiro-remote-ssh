@@ -1,6 +1,9 @@
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { Log, LogLevel } from './log';
 import { ProductMetadata, ProductMetadataError, readProductMetadata } from './product';
+import { HostTreeProvider } from './hosts';
 import { AuthoritySession } from './session';
 
 const AUTHORITY_PREFIX = 'ssh-remote';
@@ -16,9 +19,20 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push({ dispose: () => log.dispose() });
     log.setLevel(readLogLevel());
 
+    // Registered before anything that can fail, so the view and its commands exist
+    // even when this build turns out not to support remote development. An empty
+    // panel that explains itself beats no panel at all.
+    const hosts = new HostTreeProvider();
     context.subscriptions.push(
+        vscode.window.registerTreeDataProvider('kiroRemoteSsh.hosts', hosts),
         vscode.commands.registerCommand('kiroRemoteSsh.showLog', () => log.show()),
+        vscode.commands.registerCommand('kiroRemoteSsh.refreshHosts', () => hosts.refresh()),
         vscode.commands.registerCommand('kiroRemoteSsh.connect', () => connectCommand(log)),
+        vscode.commands.registerCommand('kiroRemoteSsh.connectToHost', (alias: string) => openHost(alias, log)),
+        vscode.commands.registerCommand('kiroRemoteSsh.openConfig', async () => {
+            const file = path.join(os.homedir(), '.ssh', 'config');
+            await vscode.window.showTextDocument(vscode.Uri.file(file), { preview: false });
+        }),
     );
 
     let product: ProductMetadata;
@@ -132,11 +146,15 @@ async function connectCommand(log: Log): Promise<void> {
     if (!host) {
         return;
     }
-    log.info(`opening a window for ${host}`);
-    await vscode.commands.executeCommand(
-        'vscode.newWindow',
-        { remoteAuthority: `${AUTHORITY_PREFIX}+${encodeAuthorityHost(host)}`, reuseWindow: false },
-    );
+    await openHost(host, log);
+}
+
+async function openHost(alias: string, log: Log): Promise<void> {
+    log.info(`opening a window for ${alias}`);
+    await vscode.commands.executeCommand('vscode.newWindow', {
+        remoteAuthority: `${AUTHORITY_PREFIX}+${encodeAuthorityHost(alias)}`,
+        reuseWindow: false,
+    });
 }
 
 function splitAuthority(authority: string): [string, string] {

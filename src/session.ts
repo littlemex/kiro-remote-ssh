@@ -42,7 +42,8 @@ export class AuthoritySession {
         const endpoint = await this.reh!.ensureRunning();
         this.endpoint = { port: endpoint.port, connectionToken: endpoint.connectionToken };
 
-        // No authentication session is passed on, and it is worth saying why
+        // No credential is sent to the host and no authentication session is passed
+        // on, and both deserve an explanation rather than looking forgotten
         // rather than leaving the field looking forgotten.
         //
         // The host can carry a local sign-in to the remote extension host through
@@ -90,7 +91,7 @@ export class AuthoritySession {
         // Only the host's own loopback is forwarded. Asking for another address
         // would make this machine a route into the remote network, which is not
         // what a port forward for an editor is for.
-        const forward = await this.transport.forwardToRemotePort(
+        const forward = await this.transport.listenForRemotePort(
             options.remoteAddress.port,
             options.localAddressPort,
         );
@@ -197,8 +198,12 @@ export class AuthoritySession {
             child.kill();
         }
         this.children.clear();
-        this.transport?.dispose();
-        this.transport = undefined;
+        // Give the reclaim a moment to reach the host before the connection is
+        // torn down; a credential left behind is worse than a slow dispose.
+        setTimeout(() => {
+            this.transport?.dispose();
+            this.transport = undefined;
+        }, 1_500);
         this.endpoint = undefined;
     }
 }

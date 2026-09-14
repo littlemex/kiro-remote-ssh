@@ -203,36 +203,54 @@ Dynamic (SOCKS) forwarding is not implemented.
 
 ## Authentication on the remote
 
-The host can carry a local sign-in into the remote extension host through
-`authenticationSessionForInitializingExtensions`, and the obvious way to fill it
-is for the resolver to ask the local provider for a session. That cannot work,
-and the reason is ordering rather than anything about tokens: **resolving an
-authority happens before extensions activate**, so at the only moment the field
-could be set, no authentication provider is registered — not on the remote, and
-not locally either. Asking waits for a provider that appears only after `resolve`
-returns. The first attempt did exactly that and the editor sat on "invoking final
-resolve()" until the wait was abandoned; it was measured again with a freshly
-refreshed local token in place and behaved identically, which is what rules out
-expiry as the explanation.
+The host asks you to sign in once per host, and this extension does not carry your
+sign-in across for you. That is a deliberate stop rather than an omission, and the
+reasons are worth keeping because they were expensive to find.
 
-So the field is declared and left unset, and what this extension owes the problem
-instead is forwarding. An extension on the remote that needs authentication
-serves a callback on the remote loopback and asks `asExternalUri` for a URL the
-user's own browser can reach. With forwarding in place that round trip completes:
-on a host that had no credential cache at all, a sign-in started in the remote
-window created `~/.aws/sso/cache/kiro-auth-token.json` **on the host**, written
-there by the remote extension rather than copied from this machine. The token
-then lives where the extension that uses it lives, and is refreshed there.
+The editor offers a way to hand a local session to the remote extension host,
+`authenticationSessionForInitializingExtensions`. It cannot be used from here:
+resolving an authority happens **before** extensions activate, so at the only moment
+the field could be filled there is no authentication provider to ask. Waiting for one
+is a deadlock, and it was one — the editor sat on "invoking final resolve()" until the
+wait was abandoned. Measured again with a freshly refreshed local token, so this is
+ordering and not expiry.
 
-One consequence of remote extensions is worth recording because it looks like a
-bug later: an extension that refreshes a credential in the background refreshes
-the copy on the side it runs on. With the agent running remotely, the copy on
-this machine is no longer being kept alive by anything.
+That leaves putting a credential where the remote reads one, and a working
+implementation of that was built and then removed. Two measurements decided it.
 
-Copying the local token file to the host would also make the agent work and is
-not done. Multiplying a bearer credential across machines is the class of thing
-this design exists to avoid, and it would sit oddly in the same document that
-refuses to rewrite a remote `product.json`.
+The first was that the guarantee it advertised could not be kept. Deleting the file
+when the authority is disposed depends on code of ours running at the end, and on
+SIGKILL, a crash, a closed lid or a power cut none runs — the credential simply
+stayed on the host, which a real termination confirmed. Rebuilding it so the kernel
+enforced the disappearance did work: the credential lived in anonymous memory held by
+a helper on the host and was published as a symlink into that process's descriptor
+table, a SIGALRM enforced a silence deadline, and `timeout` put a ceiling on the
+session. Every termination path revoked it, including SIGKILL, and nothing was ever
+written to a filesystem.
+
+The second measurement is why it is gone anyway: **the reader refuses a symlink at
+that path.** Its log says so plainly — `Security: symbolic link detected at token
+storage path` — and it is right to. So the only shape that satisfied the lifetime
+requirement is the one shape the consumer will not accept, and the shapes the consumer
+accepts are the ones whose lifetime cannot be guaranteed.
+
+Three routes remain, none of them free, and none taken yet:
+
+- **A real file, removed on the way out.** Accepted by the reader; the lifetime
+  guarantee is lost, so it would have to be described as "a credential copied to the
+  host for up to its expiry" rather than as session-scoped. The client registration
+  and refresh token would stay on this machine regardless, because a client secret is
+  valid for months.
+- **`extensionHostEnv` pointing the remote extension host's `HOME` at tmpfs.** A real
+  file that does not survive a reboot, which is a genuine improvement — but it moves
+  `HOME` for every extension on that host, and the consequences of that have not been
+  explored.
+- **Nothing, which is what ships.** One sign-in per host, in the remote window, using
+  the forwarding this extension does provide.
+
+Also worth recording, because it looks like a bug later: an extension that refreshes a
+credential in the background refreshes the copy on the side it runs on. With the agent
+running remotely, the copy on the client is no longer kept alive by anything.
 
 ## Not built
 
@@ -243,9 +261,30 @@ refuses to rewrite a remote `product.json`.
 - Rewriting the remote `product.json` to force a commit match. Making a mismatch
   disappear defeats the check.
 - A bundled `ssh` binary.
+- Carrying your sign-in to the host. See above: the only mechanism whose lifetime
+  could be guaranteed is rejected by the consumer, and the ones it accepts cannot be
+  bounded. Signing in once per host is the supported answer.
 - Windows *clients* are out of scope for the first release. Connection
   multiplexing and askpass both differ there, and pretending otherwise would put
   an untested branch through the security-critical path.
+
+
+## Who enforces what
+
+Every lifetime in this extension names the component that enforces it, and only three
+kinds of enforcer are admissible: the kernel, an expiry, or a process independent of
+the one being bounded. **A row whose enforcer is this extension's own cleanup code
+fails review**, because on the terminations that matter — SIGKILL, a crash, a closed
+lid, a power cut — that code does not run. This rule exists because a guarantee was
+written into this document, shipped, and then broken by exactly that mistake.
+
+| Thing with a lifetime | Enforcer | How a termination reaches it |
+|---|---|---|
+| The local listener that carries forwarded connections | Kernel | The listening descriptor is held by this process, so the kernel closes it when the process ends. Measured: twelve listeners became zero on SIGKILL. |
+| The connection to the remote extension host | — | No listener exists for it; it is a byte stream over `ssh -W`. Nothing to outlive anything. |
+| The shared SSH connection and its control socket | Kernel, then expiry | Its remote end reads a pipe only this process writes to, so end-of-input ends it; and it exits on its own after silence, which a host that never notices a vanished client would otherwise take over two hours to do. |
+| The remote server | Expiry | Started with `--enable-remote-auto-shutdown`; it deliberately outlives a disconnect so a reconnection is cheap. |
+| A credential on the host | — | None is sent. See "Authentication on the remote". |
 
 ## Verification
 
