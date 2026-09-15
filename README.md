@@ -12,8 +12,7 @@ Working and verified on a real host: the remote server installs and starts, the 
 extension host connects, and the agent runs there. Signing in happens once per host —
 this extension does not carry your sign-in across, and
 [docs/DESIGN.md](docs/DESIGN.md) says why. See [docs/DESIGN.md](docs/DESIGN.md) for what is
-built and what is deliberately not, and [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md)
-for the audit of existing options that decided the design.
+built and what is deliberately not.
 
 ## Requirements
 

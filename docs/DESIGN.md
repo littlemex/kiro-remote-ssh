@@ -13,20 +13,18 @@ The installed `product.json` declares `serverApplicationName`,
 served. What is missing is the client half: something that resolves the
 `ssh-remote` authority, puts the REH on the host, and connects the workbench.
 
-## Why not use an existing extension
+## Why this is not built on a vendored SSH implementation
 
-The community options were audited first; the audit is in
-[SECURITY_AUDIT.md](SECURITY_AUDIT.md), written by this project's author and so
-not a neutral source — it names the artifacts it read and their digests so the
-claims can be checked rather than believed. The finding that drives this design is
-that the most installed option reimplements the SSH client in JavaScript, and that
-reimplementation does not verify the server's host key and vendors an SSH library
-predating the strict key exchange mitigation for CVE-2023-48795. The second
-follows the first rather than compounding it: an attacker who is not resisted by
-the first has no need of the second. Neither is an isolated bug. They are what
-owning an SSH implementation costs.
+An editor extension that speaks SSH itself takes on the whole of it: host key
+policy, algorithm selection, rekeying, agent and FIDO2 handling, `ProxyCommand`,
+and every advisory that lands against any of those afterwards. The obligation does
+not end at the first working connection — it continues for as long as the code
+ships, and a lapse in it is invisible to the user, who has no way to tell which
+checks their editor is performing on their behalf.
 
-So the central decision is to not own one.
+That obligation is the cost being avoided here, and it is avoidable because the
+user's machine already has an implementation that carries it, configured the way
+they configured it. So the central decision is to not own one.
 
 ## Central decision: delegate SSH to OpenSSH
 
@@ -77,8 +75,10 @@ Therefore: **one persistent SSH transport per resolved authority, and everything
 multiplexed onto it.** Implemented with OpenSSH connection multiplexing — an
 extension-owned `ControlPath`, `ControlMaster` established once, and every
 subsequent operation (bootstrap, the extension host channel, user port forwards)
-issued through `-S <path>` against that master. The master is closed when the
-authority is disposed.
+issued through `-S <path>` against that master. The master is closed on dispose,
+but dispose is not what the guarantee rests on: it is given a remote command that
+reads a pipe only this process writes to, so an abrupt end closes the write end and
+ends it without any cleanup code running. See "Who enforces what".
 
 This also fixes the authentication count. Without it, a user on password, OTP or
 a FIDO2 token authenticates once per `ssh` invocation, several times per window.
@@ -272,11 +272,11 @@ running remotely, the copy on the client is no longer kept alive by anything.
 ## Not built
 
 - Windows and macOS remote hosts: no REH is published for them.
-- SOCKS / dynamic forwarding: it was the source of an all-interfaces listener in
-  the audited implementation, and nothing in this flow needs it.
+- SOCKS / dynamic forwarding: an unauthenticated proxy is a large thing to open
+  for a feature nothing in this flow needs.
 - An in-JS SSH client, an agent implementation, key parsing, a passphrase cache.
 - Rewriting the remote `product.json` to force a commit match. Making a mismatch
-  disappear defeats the check.
+  disappear defeats the check that notices it.
 - A bundled `ssh` binary.
 - Carrying your sign-in to the host. See above: the only mechanism whose lifetime
   could be guaranteed is rejected by the consumer, and the ones it accepts cannot be
