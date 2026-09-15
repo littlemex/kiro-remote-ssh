@@ -13,6 +13,27 @@ The installed `product.json` declares `serverApplicationName`,
 served. What is missing is the client half: something that resolves the
 `ssh-remote` authority, puts the REH on the host, and connects the workbench.
 
+## What the available options showed
+
+Extensions that can be installed into this editor were read before anything was
+written here. They are not named, and no version or reproduction is recorded,
+because the point of writing this down is the design consequence rather than
+anyone else's release. Four kinds of problem were found, and the last two are what
+the rest of this document is a response to.
+
+- **Built for a different editor.** The server URL is composed from the host
+  application's commit, and a fork's commit has no such URL, so acquisition fails
+  before anything else can be attempted.
+- **Not a remote window.** Browsing a remote filesystem over SFTP looks close
+  enough to be mistaken for one, but the terminal and any agent keep running
+  locally, which is the problem that motivated this in the first place.
+- **An SSH implementation inside the extension.** In one case the bundled library
+  had not been updated for years and lacked mitigations published in the interval;
+  in another, no verification of the server's identity could be found.
+- **A forwarding listener on the unspecified address.** Calling `listen` with a
+  port and no bind address reaches every interface, and an unauthenticated SOCKS
+  proxy was enabled by default.
+
 ## Why this is not built on a vendored SSH implementation
 
 An editor extension that speaks SSH itself takes on the whole of it: host key
