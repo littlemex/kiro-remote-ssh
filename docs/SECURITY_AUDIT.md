@@ -48,9 +48,8 @@ next to `grep -c` commands that cannot produce them.
 | `jeanp413.open-remote-ssh` | 0.3.1 |
 | `saurav-z.vsc-ssh-extension` | 1.1.0 |
 | `quanticware.vscodium-ssh-explorer` | 0.2.10 |
-| `aergic.zygos-kiro` | 0.4.4 |
 
-The first was read in more depth than the other three. It was the most installed
+The first was read in more depth than the other two. It was the most installed
 of them at the time, so it was the one whose behaviour mattered most to the
 question this project started from; the asymmetry is a property of how the reading
 was prioritised, not a statement that the others were found better or worse.
@@ -186,9 +185,7 @@ missing supply-chain hardening rather than an unprotected download.
 The same limit applies to this project's own answer to it, and saying so here
 rather than only in the design document is the point of recording it: digests
 remembered on first use detect a later substitution and cannot detect a
-substitution on the first fetch. `aergic.zygos-kiro` checks a SHA-256 before
-extraction, which is stronger, but the guarantee still depends on where the
-expected value came from.
+substitution on the first fetch.
 
 ### 5. Lower-severity observations
 
@@ -259,17 +256,6 @@ stated purpose and not a defect. It is recorded here because that difference —
 remote files without a remote terminal — is the thing someone looking for a remote
 window needs to know, and it is what made this project necessary rather than
 optional.
-
-## `aergic.zygos-kiro` 0.4.4
-
-Reads the host application's `product.json` to build the correct
-`kiro-reh-${os}-${arch}` URL, verifies the archive against SHA-256 before
-extraction, and shells out to the system `ssh` binary rather than vendoring an SSH
-implementation. On the three points above where the most-installed option was
-found to behave differently from this project's requirements, this one takes the
-same approach this project takes. It was first published on 2026-09-04 and was not
-read in the depth applied to `jeanp413.open-remote-ssh`, so the absence of
-findings here reflects the absence of a deep reading.
 
 ## What the audit changed in this project's design
 
